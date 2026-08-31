@@ -2363,6 +2363,11 @@ msgstr "Subtotal:"
 msgid "Support"
 msgstr "Support"
 
+#. placeholder {0}: customSepolia.name
+#: src/lib/smart-account/SmartAccountContext.tsx
+msgid "Switch your wallet to {0} to revoke sessions."
+msgstr "Switch your wallet to {0} to revoke sessions."
+
 #: src/features/notifications/settings/contact-methods/telegram.tsx
 msgid "Telegram"
 msgstr "Telegram"

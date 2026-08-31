@@ -2368,6 +2368,11 @@ msgstr ""
 msgid "Support"
 msgstr ""
 
+#. placeholder {0}: customSepolia.name
+#: src/lib/smart-account/SmartAccountContext.tsx
+msgid "Switch your wallet to {0} to revoke sessions."
+msgstr ""
+
 #: src/features/notifications/settings/contact-methods/telegram.tsx
 msgid "Telegram"
 msgstr ""
