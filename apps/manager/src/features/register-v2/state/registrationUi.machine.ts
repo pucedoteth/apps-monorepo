@@ -310,6 +310,17 @@ const machineSetup = setup({
     ),
   },
   guards: {
+    isWalletRegisteringAnotherName: ({ context }) => {
+      const confirmed = context.confirmedData
+      if (!confirmed) return false
+
+      return (
+        getBlockingRegistration(
+          confirmed.ownerAddress,
+          asEthName(confirmed.label),
+        ) !== null
+      )
+    },
     isDurationValid: ({ context }) =>
       context.duration >= MIN_REGISTER_DURATION_SECONDS,
     hasEthRecordSyncRemaining: ({ context }) =>
@@ -370,6 +381,28 @@ const machineSetup = setup({
     forwardRetry: sendTo(REGISTRATION_V2_ACTOR_ID, { type: 'RETRY' }),
     forwardCancel: sendTo(REGISTRATION_V2_ACTOR_ID, { type: 'CANCEL' }),
     forwardSuspend: sendTo(REGISTRATION_V2_ACTOR_ID, { type: 'SUSPEND' }),
+    setRegistrationLockError: assign({
+      lastErrorMessage: ({ context }) => {
+        const confirmed = context.confirmedData
+        const blocking = confirmed
+          ? getBlockingRegistration(
+              confirmed.ownerAddress,
+              asEthName(confirmed.label),
+            )
+          : null
+
+        return registrationLockMessage(blocking)
+      },
+    }),
+    acquireRegistrationLock: ({ context }) => {
+      const confirmed = context.confirmedData
+      if (!confirmed) return
+
+      acquireRegistrationLock(
+        confirmed.ownerAddress,
+        asEthName(confirmed.label),
+      )
+    },
     releaseRegistrationLock: ({ context }) => {
       const confirmed = context.confirmedData
       if (!confirmed) return
@@ -525,6 +558,10 @@ const machineSetup = setup({
   },
 })
 
+/** Names the registration holding this wallet, so the user knows what to finish. */
+const registrationLockMessage = (blockingName: string | null): string =>
+  `Cannot register: ${blockingName ?? 'another name'} is already being registered with this wallet, possibly in another tab. Finish or cancel it first.`
+
 const startRegistrationAction = machineSetup.createAction(
   enqueueActions(({ enqueue, event }) => {
     if (event.type !== 'registration.start') {
@@ -567,9 +604,7 @@ const startRegistrationAction = machineSetup.createAction(
     if (blockingName !== null) {
       return enqueue.raise({
         type: '$error',
-        error: new Error(
-          `Cannot register: ${blockingName} is already being registered with this wallet, possibly in another tab. Finish or cancel it first.`,
-        ),
+        error: new Error(registrationLockMessage(blockingName)),
       })
     }
 
@@ -1199,10 +1234,18 @@ export const registrationV2UiMachine = machineSetup.createMachine({
     success: {},
     failure: {
       on: {
-        retry: {
-          target: 'registering',
-          actions: ['clearError', 'forwardRetry'],
-        },
+        retry: [
+          {
+            // Retry re-enters `registering` directly, so it needs the same
+            // wallet guard the initial start has.
+            guard: 'isWalletRegisteringAnotherName',
+            actions: 'setRegistrationLockError',
+          },
+          {
+            target: 'registering',
+            actions: ['clearError', 'acquireRegistrationLock', 'forwardRetry'],
+          },
+        ],
         cancel: {
           target: 'pricing',
           actions: [
