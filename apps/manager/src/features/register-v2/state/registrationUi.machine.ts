@@ -314,12 +314,7 @@ const machineSetup = setup({
       const confirmed = context.confirmedData
       if (!confirmed) return false
 
-      return (
-        getBlockingRegistration(
-          confirmed.ownerAddress,
-          asEthName(confirmed.label),
-        ) !== null
-      )
+      return getBlockingRegistration(confirmed.ownerAddress) !== null
     },
     isDurationValid: ({ context }) =>
       context.duration >= MIN_REGISTER_DURATION_SECONDS,
@@ -385,10 +380,7 @@ const machineSetup = setup({
       lastErrorMessage: ({ context }) => {
         const confirmed = context.confirmedData
         const blocking = confirmed
-          ? getBlockingRegistration(
-              confirmed.ownerAddress,
-              asEthName(confirmed.label),
-            )
+          ? getBlockingRegistration(confirmed.ownerAddress)
           : null
 
         return registrationLockMessage(blocking)
@@ -407,10 +399,7 @@ const machineSetup = setup({
       const confirmed = context.confirmedData
       if (!confirmed) return
 
-      releaseRegistrationLock(
-        confirmed.ownerAddress,
-        asEthName(confirmed.label),
-      )
+      releaseRegistrationLock(confirmed.ownerAddress)
     },
     clearRegistrationData: assign({
       confirmedData: () => undefined,
@@ -470,10 +459,7 @@ const machineSetup = setup({
 
       const confirmed = context.confirmedData
       if (confirmed) {
-        releaseRegistrationLock(
-          confirmed.ownerAddress,
-          asEthName(confirmed.label),
-        )
+        releaseRegistrationLock(confirmed.ownerAddress)
       }
 
       enqueue.assign({
@@ -643,21 +629,16 @@ const startRegistrationAction = machineSetup.createAction(
     // One registration at a time per wallet, across tabs. The commit batch
     // funds the HCA with an EIP-2612 permit whose nonce is sequential per
     // wallet, so a concurrent run reverts `TransferFromFailed()` and never
-    // records its commitment. Checked after the assign above: `confirmedData`
-    // is what `retry` reads to re-run this guard.
-    const blockingName = getBlockingRegistration(
-      ownerAddress,
-      asEthName(event.label),
-    )
-
-    if (blockingName !== null) {
+    // records its commitment. Claimed after the assign above: `confirmedData`
+    // is what `retry` reads to re-run this check.
+    if (!acquireRegistrationLock(ownerAddress, asEthName(event.label))) {
       return enqueue.raise({
         type: '$error',
-        error: new Error(registrationLockMessage(blockingName)),
+        error: new Error(
+          registrationLockMessage(getBlockingRegistration(ownerAddress)),
+        ),
       })
     }
-
-    acquireRegistrationLock(ownerAddress, asEthName(event.label))
 
     enqueue(
       machineSetup.sendTo(REGISTRATION_V2_ACTOR_ID, {
