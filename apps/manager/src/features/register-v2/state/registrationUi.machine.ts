@@ -98,6 +98,11 @@ type Context = {
   duration: number
   selectedToken: SUPPORTED_TOKEN | undefined
   lastErrorMessage?: string
+  /** A start or resume the wallet lock refused; `retry` re-raises it once free. */
+  pendingStart?: Extract<
+    Events,
+    { type: 'registration.start' | 'registration.resume' }
+  >
   confirmedData?: RegistrationConfirmedData
   postRegistrationSetup?: RegistrationPostRegistrationSetup
   postRegistrationData?: PostRegistrationData
@@ -310,6 +315,7 @@ const machineSetup = setup({
     ),
   },
   guards: {
+    hasPendingStart: ({ context }) => context.pendingStart !== undefined,
     isWalletRegisteringAnotherName: ({ context }) => {
       const confirmed = context.confirmedData
       if (!confirmed) return false
@@ -381,6 +387,11 @@ const machineSetup = setup({
     forwardRetry: sendTo(REGISTRATION_V2_ACTOR_ID, { type: 'RETRY' }),
     forwardCancel: sendTo(REGISTRATION_V2_ACTOR_ID, { type: 'CANCEL' }),
     forwardSuspend: sendTo(REGISTRATION_V2_ACTOR_ID, { type: 'SUSPEND' }),
+    // The child never received START_REGISTRATION for a refused start, so a
+    // RETRY would be dropped in its idle state. Re-run the start instead.
+    raisePendingStart: enqueueActions(({ enqueue, context }) => {
+      if (context.pendingStart) enqueue.raise(context.pendingStart)
+    }),
     setRegistrationLockError: assign({
       lastErrorMessage: ({ context }) => {
         const confirmed = context.confirmedData
@@ -407,12 +418,10 @@ const machineSetup = setup({
       const confirmed = context.confirmedData
       if (!confirmed) return
 
-      releaseRegistrationLock(
-        confirmed.ownerAddress,
-        asEthName(confirmed.label),
-      )
+      releaseRegistrationLock(confirmed.ownerAddress)
     },
     clearRegistrationData: assign({
+      pendingStart: () => undefined,
       confirmedData: () => undefined,
       postRegistrationSetup: () => undefined,
       postRegistrationData: () => undefined,
@@ -470,10 +479,7 @@ const machineSetup = setup({
 
       const confirmed = context.confirmedData
       if (confirmed) {
-        releaseRegistrationLock(
-          confirmed.ownerAddress,
-          asEthName(confirmed.label),
-        )
+        releaseRegistrationLock(confirmed.ownerAddress)
       }
 
       enqueue.assign({
@@ -646,6 +652,7 @@ const startRegistrationAction = machineSetup.createAction(
     // records its commitment. Claimed after the assign above: `confirmedData`
     // is what `retry` reads to re-run this check.
     if (!acquireRegistrationLock(ownerAddress, asEthName(event.label))) {
+      enqueue.assign({ pendingStart: event })
       return enqueue.raise({
         type: '$error',
         error: new Error(
@@ -655,6 +662,8 @@ const startRegistrationAction = machineSetup.createAction(
         ),
       })
     }
+
+    enqueue.assign({ pendingStart: undefined })
 
     enqueue(
       machineSetup.sendTo(REGISTRATION_V2_ACTOR_ID, {
@@ -758,6 +767,22 @@ const resumeRegistrationAction = machineSetup.createAction(
       hcaPrimaryName: event.record.context.primaryName,
       addrReverseClearTxId: undefined,
     })
+
+    // A resumed run has no claim on the wallet yet (a reload dropped this
+    // tab's), and it is about to continue a commit on that wallet's nonce.
+    if (!acquireRegistrationLock(ownerAddress, asEthName(event.label))) {
+      enqueue.assign({ pendingStart: event })
+      return enqueue.raise({
+        type: '$error',
+        error: new Error(
+          registrationLockMessage(
+            getBlockingRegistration(ownerAddress, asEthName(event.label)),
+          ),
+        ),
+      })
+    }
+
+    enqueue.assign({ pendingStart: undefined })
 
     enqueue(
       machineSetup.sendTo(REGISTRATION_V2_ACTOR_ID, {
@@ -1240,10 +1265,23 @@ export const registrationV2UiMachine = machineSetup.createMachine({
             actions: 'setRegistrationLockError',
           },
           {
+            guard: 'hasPendingStart',
+            actions: ['clearError', 'raisePendingStart'],
+          },
+          {
             target: 'registering',
             actions: ['clearError', 'acquireRegistrationLock', 'forwardRetry'],
           },
         ],
+        'registration.start': {
+          target: 'registering',
+          guard: ({ event }) => event.duration >= MIN_REGISTER_DURATION_SECONDS,
+          actions: ['clearError', 'clearMaxProgress', startRegistrationAction],
+        },
+        'registration.resume': {
+          target: 'registering',
+          actions: ['clearError', 'clearMaxProgress', resumeRegistrationAction],
+        },
         cancel: {
           target: 'pricing',
           actions: [
